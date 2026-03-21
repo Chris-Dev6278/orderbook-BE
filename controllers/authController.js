@@ -32,17 +32,18 @@ message SignatureMap {
 const root = protobuf.parse(hederaSigProto).root;
 const SignatureMap = root.lookupType("proto.SignatureMap");
 
-function decodeSignatureMap(signatureMapB64) {
+function decodeSignatureMap(signatureMapB64, next) {
   const bytes = Buffer.from(signatureMapB64, "base64");
   const decoded = SignatureMap.decode(bytes);
 
   const pair = decoded.sigPair?.[0];
-  if (!pair) throw new Error("No signature pair found in SignatureMap");
+  if (!pair)
+    return next(new AppError("No signature pair found in SignatureMap", 400));
 
   const signature = pair.ed25519 || pair.ECDSA_secp256k1;
 
   if (!signature) {
-    throw new Error("No Ed25519 or ECDSA signature found in SignaturePair");
+    return next(new AppError("No signature pair found in SignatureMap", 400));
   }
 
   return {
@@ -76,19 +77,24 @@ async function getAccountInfoFromMirror(accountId) {
 // message: the exact string sent to wallet for signing
 // signature: hex or base64 string
 // accountId: "0.0.8123144"
-async function verifySignedNonce(message, signatureMapB64, accountId) {
+async function verifySignedNonce(message, signatureMapB64, accountId, next) {
   const info = await getAccountInfoFromMirror(accountId);
 
   // Adjust this to match the exact Mirror Node JSON shape you receive.
   // The Hedera key type can be Ed25519 or ECDSA(secp256k1). :contentReference[oaicite:2]{index=2}
   const publicKeyHex = info.key?.key;
-  if (!publicKeyHex) throw new Error("Public key not found");
+  if (!publicKeyHex) return next(new AppError("Public key not found", 400));
 
-  const { type, signatureBytes } = decodeSignatureMap(signatureMapB64);
+  const { type, signatureBytes } = decodeSignatureMap(signatureMapB64, next);
   const signedMessage = buildHederaSignedMessage(message);
 
   if (type !== "ed25519") {
-    throw new Error("This verifier currently supports only Ed25519 signatures");
+    return next(
+      new AppError(
+        "This verifier currently supports only Ed25519 signatures",
+        400,
+      ),
+    );
   }
 
   const messageBytes = new Uint8Array(signedMessage);
@@ -170,7 +176,12 @@ exports.verifySignature = function (nonces) {
       return next(new AppError("Invalid or expired nonce", 400));
     }
 
-    const isVerified = await verifySignedNonce(message, signature, accountId);
+    const isVerified = await verifySignedNonce(
+      message,
+      signature,
+      accountId,
+      next,
+    );
     if (!isVerified)
       return next(new AppError("Could not verify signature message", 400));
     const docs = await User.find({ accountId });
